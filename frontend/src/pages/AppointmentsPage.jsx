@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { SelectInput, SubmitButton, TextArea, TextInput } from '../components/Forms'
 import { SectionHeader } from '../components/SectionHeader'
@@ -13,11 +13,85 @@ const initialForm = {
   notes: '',
 }
 
+function isPlanEligible(plan) {
+  if (plan.status !== 'active') return false
+  if (new Date(plan.expires_at) < new Date()) return false
+  if ((plan.sessions_total - plan.sessions_used) <= 0) return false
+  return true
+}
+
+function planContainsServiceItem(plan, serviceItemId) {
+  return plan.package?.items?.some((item) => item.service_item_id === serviceItemId) ?? false
+}
+
 export function AppointmentsPage({ data, refresh, setError }) {
   const [form, setForm] = useState(initialForm)
 
+  const eligiblePlans = useMemo(() => {
+    return data.treatmentPlans.filter(isPlanEligible)
+  }, [data.treatmentPlans])
+
+  const filteredPlans = useMemo(() => {
+    if (!form.service_item_id) return eligiblePlans
+    const sid = Number(form.service_item_id)
+    return eligiblePlans.filter((plan) => planContainsServiceItem(plan, sid))
+  }, [eligiblePlans, form.service_item_id])
+
+  const filteredServiceItems = useMemo(() => {
+    if (!form.treatment_plan_id) return data.serviceItems
+    const plan = data.treatmentPlans.find((p) => p.id === Number(form.treatment_plan_id))
+    if (!plan?.package?.items) return data.serviceItems
+    const allowedIds = new Set(plan.package.items.map((item) => item.service_item_id))
+    return data.serviceItems.filter((item) => allowedIds.has(item.id))
+  }, [data.serviceItems, data.treatmentPlans, form.treatment_plan_id])
+
+  const handleServiceItemChange = (e) => {
+    const newServiceItemId = e.target.value
+    const updates = { service_item_id: newServiceItemId }
+    if (form.treatment_plan_id) {
+      const plan = data.treatmentPlans.find((p) => p.id === Number(form.treatment_plan_id))
+      if (plan && !planContainsServiceItem(plan, Number(newServiceItemId))) {
+        updates.treatment_plan_id = ''
+      }
+    }
+    setForm({ ...form, ...updates })
+  }
+
+  const handlePlanChange = (e) => {
+    const newPlanId = e.target.value
+    const updates = { treatment_plan_id: newPlanId }
+    if (newPlanId) {
+      const plan = data.treatmentPlans.find((p) => p.id === Number(newPlanId))
+      if (plan && form.service_item_id) {
+        if (!planContainsServiceItem(plan, Number(form.service_item_id))) {
+          const firstItem = plan.package?.items?.[0]
+          updates.service_item_id = firstItem ? String(firstItem.service_item_id) : ''
+        }
+      }
+    }
+    setForm({ ...form, ...updates })
+  }
+
+  const validateForm = () => {
+    const sid = Number(form.service_item_id)
+    const pid = form.treatment_plan_id ? Number(form.treatment_plan_id) : null
+    if (!pid) return null
+    const plan = data.treatmentPlans.find((p) => p.id === pid)
+    if (!plan) return '所选疗程卡不存在'
+    if (plan.status !== 'active') return `疗程卡状态为「${plan.status}」，无法预约`
+    if (new Date(plan.expires_at) < new Date()) return '疗程卡已过期，无法预约'
+    if (plan.sessions_total - plan.sessions_used <= 0) return '疗程卡剩余次数不足，无法预约'
+    if (!planContainsServiceItem(plan, sid)) return '所选项目不在该疗程卡套餐范围内'
+    return null
+  }
+
   const submit = async (event) => {
     event.preventDefault()
+    const validationError = validateForm()
+    if (validationError) {
+      setError(validationError)
+      return
+    }
     try {
       await api.createAppointment({
         ...form,
@@ -39,16 +113,16 @@ export function AppointmentsPage({ data, refresh, setError }) {
       <form className="form-grid panel" onSubmit={submit}>
         <TextInput label="客户姓名" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} required />
         <TextInput label="手机号" value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} />
-        <SelectInput label="护理项目" value={form.service_item_id} onChange={(e) => setForm({ ...form, service_item_id: e.target.value })} required>
+        <SelectInput label="护理项目" value={form.service_item_id} onChange={handleServiceItemChange} required>
           <option value="">选择项目</option>
-          {data.serviceItems.map((item) => (
+          {filteredServiceItems.map((item) => (
             <option value={item.id} key={item.id}>{item.name}</option>
           ))}
         </SelectInput>
-        <SelectInput label="关联疗程" value={form.treatment_plan_id} onChange={(e) => setForm({ ...form, treatment_plan_id: e.target.value })}>
+        <SelectInput label="关联疗程" value={form.treatment_plan_id} onChange={handlePlanChange}>
           <option value="">不关联</option>
-          {data.treatmentPlans.map((plan) => (
-            <option value={plan.id} key={plan.id}>{plan.customer_name} - {plan.package?.name}</option>
+          {filteredPlans.map((plan) => (
+            <option value={plan.id} key={plan.id}>{plan.customer_name} - {plan.package?.name}（剩余{plan.sessions_total - plan.sessions_used}次）</option>
           ))}
         </SelectInput>
         <TextInput label="预约时间" type="datetime-local" value={form.scheduled_at} onChange={(e) => setForm({ ...form, scheduled_at: e.target.value })} required />

@@ -172,10 +172,30 @@ def list_appointments(db: Session) -> list[Appointment]:
     return list(db.scalars(stmt))
 
 
+def _validate_appointment_plan(db: Session, service_item_id: int, treatment_plan_id: int | None) -> None:
+    if treatment_plan_id is None:
+        return
+    plan = db.scalar(
+        select(TreatmentPlan)
+        .where(TreatmentPlan.id == treatment_plan_id)
+        .options(selectinload(TreatmentPlan.package).selectinload(CarePackage.items))
+    )
+    if not plan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="疗程卡不存在")
+    if plan.status != "active":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"疗程卡状态为「{plan.status}」，无法预约")
+    if plan.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="疗程卡已过期，无法预约")
+    if plan.sessions_used >= plan.sessions_total:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="疗程卡剩余次数不足，无法预约")
+    allowed_ids = {item.service_item_id for item in plan.package.items}
+    if service_item_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选项目不在该疗程卡套餐范围内")
+
+
 def create_appointment(db: Session, payload: AppointmentCreate) -> Appointment:
     _get_or_404(db, ServiceItem, payload.service_item_id)
-    if payload.treatment_plan_id is not None:
-        _get_or_404(db, TreatmentPlan, payload.treatment_plan_id)
+    _validate_appointment_plan(db, payload.service_item_id, payload.treatment_plan_id)
     record = Appointment(**payload.model_dump())
     db.add(record)
     db.commit()
@@ -185,6 +205,11 @@ def create_appointment(db: Session, payload: AppointmentCreate) -> Appointment:
 
 def update_appointment(db: Session, appointment_id: int, payload: AppointmentUpdate) -> Appointment:
     record = _get_or_404(db, Appointment, appointment_id)
+    new_service_item_id = payload.service_item_id if payload.service_item_id is not None else record.service_item_id
+    new_plan_id = payload.treatment_plan_id if payload.treatment_plan_id is not None else record.treatment_plan_id
+    if new_service_item_id != record.service_item_id or new_plan_id != record.treatment_plan_id:
+        _get_or_404(db, ServiceItem, new_service_item_id)
+        _validate_appointment_plan(db, new_service_item_id, new_plan_id)
     _apply_updates(record, payload)
     db.commit()
     db.refresh(record)
