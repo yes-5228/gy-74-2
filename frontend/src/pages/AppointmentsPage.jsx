@@ -13,10 +13,29 @@ const initialForm = {
   notes: '',
 }
 
-function isPlanEligible(plan) {
+function isDateExpiredUTC(expiresAt) {
+  const now = new Date()
+  const expire = new Date(expiresAt)
+  const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const expireUTC = Date.UTC(expire.getUTCFullYear(), expire.getUTCMonth(), expire.getUTCDate())
+  return expireUTC < nowUTC
+}
+
+function getBookedCount(planId, appointments) {
+  return appointments.filter(
+    (apt) => apt.treatment_plan_id === planId && apt.status !== 'completed'
+  ).length
+}
+
+function getAvailableSessions(plan, appointments) {
+  const booked = getBookedCount(plan.id, appointments)
+  return plan.sessions_total - plan.sessions_used - booked
+}
+
+function isPlanEligible(plan, appointments) {
   if (plan.status !== 'active') return false
-  if (new Date(plan.expires_at) < new Date()) return false
-  if ((plan.sessions_total - plan.sessions_used) <= 0) return false
+  if (isDateExpiredUTC(plan.expires_at)) return false
+  if (getAvailableSessions(plan, appointments) <= 0) return false
   return true
 }
 
@@ -28,8 +47,8 @@ export function AppointmentsPage({ data, refresh, setError }) {
   const [form, setForm] = useState(initialForm)
 
   const eligiblePlans = useMemo(() => {
-    return data.treatmentPlans.filter(isPlanEligible)
-  }, [data.treatmentPlans])
+    return data.treatmentPlans.filter((plan) => isPlanEligible(plan, data.appointments))
+  }, [data.treatmentPlans, data.appointments])
 
   const filteredPlans = useMemo(() => {
     if (!form.service_item_id) return eligiblePlans
@@ -79,8 +98,8 @@ export function AppointmentsPage({ data, refresh, setError }) {
     const plan = data.treatmentPlans.find((p) => p.id === pid)
     if (!plan) return '所选疗程卡不存在'
     if (plan.status !== 'active') return `疗程卡状态为「${plan.status}」，无法预约`
-    if (new Date(plan.expires_at) < new Date()) return '疗程卡已过期，无法预约'
-    if (plan.sessions_total - plan.sessions_used <= 0) return '疗程卡剩余次数不足，无法预约'
+    if (isDateExpiredUTC(plan.expires_at)) return '疗程卡已过期，无法预约'
+    if (getAvailableSessions(plan, data.appointments) <= 0) return '疗程卡次数已约满，无法创建新预约'
     if (!planContainsServiceItem(plan, sid)) return '所选项目不在该疗程卡套餐范围内'
     return null
   }
@@ -121,9 +140,15 @@ export function AppointmentsPage({ data, refresh, setError }) {
         </SelectInput>
         <SelectInput label="关联疗程" value={form.treatment_plan_id} onChange={handlePlanChange}>
           <option value="">不关联</option>
-          {filteredPlans.map((plan) => (
-            <option value={plan.id} key={plan.id}>{plan.customer_name} - {plan.package?.name}（剩余{plan.sessions_total - plan.sessions_used}次）</option>
-          ))}
+          {filteredPlans.map((plan) => {
+            const remaining = plan.sessions_total - plan.sessions_used
+            const available = getAvailableSessions(plan, data.appointments)
+            return (
+              <option value={plan.id} key={plan.id}>
+                {plan.customer_name} - {plan.package?.name}（剩余{remaining}次/{available}次可约）
+              </option>
+            )
+          })}
         </SelectInput>
         <TextInput label="预约时间" type="datetime-local" value={form.scheduled_at} onChange={(e) => setForm({ ...form, scheduled_at: e.target.value })} required />
         <TextInput label="美容师" value={form.beautician} onChange={(e) => setForm({ ...form, beautician: e.target.value })} />

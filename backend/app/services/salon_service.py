@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.salon import Appointment, CarePackage, PackageItem, ServiceItem, TreatmentPlan
@@ -172,7 +172,7 @@ def list_appointments(db: Session) -> list[Appointment]:
     return list(db.scalars(stmt))
 
 
-def _validate_appointment_plan(db: Session, service_item_id: int, treatment_plan_id: int | None) -> None:
+def _validate_appointment_plan(db: Session, service_item_id: int, treatment_plan_id: int | None, exclude_appointment_id: int | None = None) -> None:
     if treatment_plan_id is None:
         return
     plan = db.scalar(
@@ -184,10 +184,19 @@ def _validate_appointment_plan(db: Session, service_item_id: int, treatment_plan
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="疗程卡不存在")
     if plan.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"疗程卡状态为「{plan.status}」，无法预约")
-    if plan.expires_at < datetime.utcnow():
+    now = datetime.utcnow()
+    if plan.expires_at.date() < now.date():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="疗程卡已过期，无法预约")
-    if plan.sessions_used >= plan.sessions_total:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="疗程卡剩余次数不足，无法预约")
+    booked_stmt = select(func.count(Appointment.id)).where(
+        Appointment.treatment_plan_id == treatment_plan_id,
+        Appointment.status != "completed",
+    )
+    if exclude_appointment_id is not None:
+        booked_stmt = booked_stmt.where(Appointment.id != exclude_appointment_id)
+    booked_count = db.scalar(booked_stmt)
+    sessions_remaining = plan.sessions_total - plan.sessions_used - booked_count
+    if sessions_remaining <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="疗程卡次数已约满，无法创建新预约")
     allowed_ids = {item.service_item_id for item in plan.package.items}
     if service_item_id not in allowed_ids:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选项目不在该疗程卡套餐范围内")
@@ -207,9 +216,8 @@ def update_appointment(db: Session, appointment_id: int, payload: AppointmentUpd
     record = _get_or_404(db, Appointment, appointment_id)
     new_service_item_id = payload.service_item_id if payload.service_item_id is not None else record.service_item_id
     new_plan_id = payload.treatment_plan_id if payload.treatment_plan_id is not None else record.treatment_plan_id
-    if new_service_item_id != record.service_item_id or new_plan_id != record.treatment_plan_id:
-        _get_or_404(db, ServiceItem, new_service_item_id)
-        _validate_appointment_plan(db, new_service_item_id, new_plan_id)
+    _get_or_404(db, ServiceItem, new_service_item_id)
+    _validate_appointment_plan(db, new_service_item_id, new_plan_id, exclude_appointment_id=appointment_id)
     _apply_updates(record, payload)
     db.commit()
     db.refresh(record)
