@@ -382,6 +382,31 @@ td small {
   color: #687477;
 }
 
+.timeline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  grid-column: span 4;
+}
+
+@media (max-width: 1050px) {
+  .form-actions {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 680px) {
+  .form-actions {
+    grid-column: span 1;
+  }
+}
+
 .alert,
 .empty-state {
   border-radius: 8px;
