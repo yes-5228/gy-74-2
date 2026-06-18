@@ -32,9 +32,12 @@ def _apply_updates(record, payload):
 
 
 def serialize_treatment_plan(plan: TreatmentPlan) -> dict:
+    now = datetime.utcnow()
+    is_expired = plan.expires_at.date() < now.date()
     return {
         **plan.__dict__,
         "sessions_remaining": max(plan.sessions_total - plan.sessions_used, 0),
+        "is_expired": is_expired,
     }
 
 

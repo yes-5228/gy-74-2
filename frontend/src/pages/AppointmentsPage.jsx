@@ -15,16 +15,13 @@ const initialForm = {
   status: 'booked',
 }
 
-function isDateExpiredUTC(expiresAt) {
-  const now = new Date()
-  const expire = new Date(expiresAt)
-  const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-  const expireUTC = Date.UTC(expire.getUTCFullYear(), expire.getUTCMonth(), expire.getUTCDate())
-  return expireUTC < nowUTC
+function parseUTCDate(dateStr) {
+  const s = dateStr.endsWith('Z') ? dateStr : `${dateStr}Z`
+  return new Date(s)
 }
 
 function formatDateUTC(dateStr) {
-  const d = new Date(dateStr)
+  const d = parseUTCDate(dateStr)
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
 }
 
@@ -44,7 +41,7 @@ function getAvailableSessions(plan, appointments, excludeAppointmentId = null) {
 
 function isPlanEligible(plan, appointments, excludeAppointmentId = null) {
   if (plan.status !== 'active') return false
-  if (isDateExpiredUTC(plan.expires_at)) return false
+  if (plan.is_expired) return false
   if (getAvailableSessions(plan, appointments, excludeAppointmentId) <= 0) return false
   return true
 }
@@ -117,13 +114,10 @@ export function AppointmentsPage({ data, refresh, setError }) {
   const handlePlanChange = (e) => {
     const newPlanId = e.target.value
     const updates = { treatment_plan_id: newPlanId }
-    if (newPlanId) {
+    if (newPlanId && form.service_item_id) {
       const plan = data.treatmentPlans.find((p) => p.id === Number(newPlanId))
-      if (plan && form.service_item_id) {
-        if (!planContainsServiceItem(plan, Number(form.service_item_id))) {
-          const firstItem = plan.package?.items?.[0]
-          updates.service_item_id = firstItem ? String(firstItem.service_item_id) : ''
-        }
+      if (plan && !planContainsServiceItem(plan, Number(form.service_item_id))) {
+        updates.service_item_id = ''
       }
     }
     setForm({ ...form, ...updates })
@@ -136,7 +130,7 @@ export function AppointmentsPage({ data, refresh, setError }) {
     const plan = data.treatmentPlans.find((p) => p.id === pid)
     if (!plan) return '所选疗程卡不存在'
     if (plan.status !== 'active') return `疗程卡状态为「${plan.status}」，无法预约`
-    if (isDateExpiredUTC(plan.expires_at)) return '疗程卡已过期，无法预约'
+    if (plan.is_expired) return '疗程卡已过期，无法预约'
     if (getAvailableSessions(plan, data.appointments, editingId) <= 0) {
       return '疗程卡次数已约满，无法创建新预约'
     }
@@ -190,10 +184,10 @@ export function AppointmentsPage({ data, refresh, setError }) {
           {filteredPlans.map((plan) => {
             const remaining = plan.sessions_total - plan.sessions_used
             const available = getAvailableSessions(plan, data.appointments, editingId)
-            const expired = isDateExpiredUTC(plan.expires_at)
+            const expiredLabel = plan.is_expired ? '（已过期）' : ''
             return (
               <option value={plan.id} key={plan.id}>
-                {plan.customer_name} - {plan.package?.name}（剩余{remaining}次/{available}次可约，有效期至 {formatDateUTC(plan.expires_at)}）
+                {plan.customer_name} - {plan.package?.name}（剩余{remaining}次/{available}次可约，有效期至 {formatDateUTC(plan.expires_at)}{expiredLabel}）
               </option>
             )
           })}

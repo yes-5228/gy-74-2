@@ -99,6 +99,7 @@ class TreatmentPlanRead(TreatmentPlanBase):
     id: int
     package: CarePackageRead
     sessions_remaining: int
+    is_expired: bool
 
     model_config = ConfigDict(from_attributes=True)
 
